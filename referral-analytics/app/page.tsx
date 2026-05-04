@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from 'react';
+import Papa from 'papaparse';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell,
@@ -9,10 +10,9 @@ import {
 } from 'recharts';
 import {
   ShieldCheck, ShieldAlert, Users, TrendingUp,
-  Activity, CheckCircle2, AlertCircle, ArrowUpRight,
-  Clock, Trophy, Zap, Target, Eye,
+  Activity, CheckCircle2, AlertCircle, Eye,
+  Clock, Trophy, Zap, Target,
 } from 'lucide-react';
-import { referralData, ReferralRecord } from '../lib/data';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
@@ -47,8 +47,7 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function shortId(id: string) { return id === 'N/A' ? '—' : id.slice(0, 8) + '…'; }
-function fmtDate(d: string)  { return d === 'N/A' ? null : d.slice(0, 10); }
+function shortId(id: string) { return (!id || id === 'N/A') ? '—' : id.slice(0, 8) + '…'; }
 function parseWeek(dateStr: string): string | null {
   if (!dateStr || dateStr === 'N/A') return null;
   const d = new Date(dateStr);
@@ -96,10 +95,8 @@ function KpiCard({ title, value, sub, icon, color, animate }: {
       className="relative rounded-2xl p-5 overflow-hidden group transition-all duration-200 cursor-default"
       style={{ background: T.surface, border: `1px solid ${T.border}` }}
     >
-      {/* glow hover */}
       <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-2xl pointer-events-none"
         style={{ background: `radial-gradient(circle at 30% 40%, ${color}10 0%, transparent 70%)` }} />
-      {/* top accent bar */}
       <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl" style={{ background: color }} />
       <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4"
         style={{ background: color + '20', color }}>
@@ -171,11 +168,41 @@ function AnimatedBar({ pct, color, delay = 0 }: { pct: number; color: string; de
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
+  const [referralData, setReferralData] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
+
   useEffect(() => { setMounted(true); }, []);
+
+  // Fetch and parse the CSV on load
+  useEffect(() => {
+    fetch('/referral_report.csv')
+      .then((response) => response.text())
+      .then((csvText) => {
+        Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            // Convert string "true"/"false" to actual booleans for the fraud logic
+            const formattedData = results.data.map((row: any) => ({
+              ...row,
+              is_business_logic_valid: row.is_business_logic_valid?.toString().toLowerCase() === 'true'
+            }));
+            setReferralData(formattedData);
+            setIsLoading(false);
+          },
+        });
+      })
+      .catch((error) => {
+        console.error("Error loading CSV:", error);
+        setIsLoading(false);
+      });
+  }, []);
 
   // ── Core metrics ──────────────────────────────────────────────────────────
   const metrics = useMemo(() => {
+    if (referralData.length === 0) return { total: 0, valid: 0, invalid: 0, berhasil: 0, menunggu: 0, tidakBerhasil: 0, convRate: 0, validPct: 0 };
+    
     const total           = referralData.length;
     const valid           = referralData.filter(d => d.is_business_logic_valid).length;
     const invalid         = total - valid;
@@ -185,15 +212,16 @@ export default function AnalyticsPage() {
     const convRate        = Math.round((berhasil / total) * 100);
     const validPct        = Math.round((valid / total) * 100);
     return { total, valid, invalid, berhasil, menunggu, tidakBerhasil, convRate, validPct };
-  }, []);
+  }, [referralData]);
 
   // ── Source distribution ───────────────────────────────────────────────────
   const sourceData = useMemo(() => {
     const map: Record<string, { total: number; berhasil: number }> = {};
     for (const r of referralData) {
-      if (!map[r.referral_source]) map[r.referral_source] = { total: 0, berhasil: 0 };
-      map[r.referral_source].total++;
-      if (r.referral_status === 'Berhasil') map[r.referral_source].berhasil++;
+      const source = r.referral_source || 'Unknown';
+      if (!map[source]) map[source] = { total: 0, berhasil: 0 };
+      map[source].total++;
+      if (r.referral_status === 'Berhasil') map[source].berhasil++;
     }
     return Object.entries(map).map(([name, v]) => ({
       name: name.length > 16 ? name.slice(0, 14) + '…' : name,
@@ -201,24 +229,23 @@ export default function AnalyticsPage() {
       berhasil: v.berhasil,
       convRate: Math.round((v.berhasil / v.total) * 100),
     }));
-  }, []);
+  }, [referralData]);
 
   // ── Status breakdown ─────────────────────────────────────────────────────
   const statusData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const r of referralData) {
-      const englishLabel = LABEL_MAP[r.referral_status] || r.referral_status;
+      const englishLabel = LABEL_MAP[r.referral_status] || r.referral_status || 'Unknown';
       map[englishLabel] = (map[englishLabel] || 0) + 1;
     }
     return Object.entries(map).map(([name, value]) => ({ name, value }));
-  }, []);
+  }, [referralData]);
 
-  
   // ── Club leaderboard ──────────────────────────────────────────────────────
   const clubData = useMemo(() => {
     const map: Record<string, { total: number; berhasil: number; flagged: number }> = {};
     for (const r of referralData) {
-      if (r.referrer_homeclub === 'N/A') continue;
+      if (!r.referrer_homeclub || r.referrer_homeclub === 'N/A') continue;
       if (!map[r.referrer_homeclub]) map[r.referrer_homeclub] = { total: 0, berhasil: 0, flagged: 0 };
       map[r.referrer_homeclub].total++;
       if (r.referral_status === 'Berhasil') map[r.referrer_homeclub].berhasil++;
@@ -228,7 +255,7 @@ export default function AnalyticsPage() {
       .map(([name, v]) => ({ name, ...v, rate: Math.round((v.berhasil / v.total) * 100) }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 5);
-  }, []);
+  }, [referralData]);
 
   // ── Time-based trends ─────────────────────────────────────────────────────
   const weeklyTrend = useMemo(() => {
@@ -248,7 +275,7 @@ export default function AnalyticsPage() {
         ...v,
         convRate: Math.round((v.berhasil / v.total) * 100),
       }));
-  }, []);
+  }, [referralData]);
 
   const onlineOfflineTrend = useMemo(() => {
     const map: Record<string, { Online: number; Offline: number }> = {};
@@ -262,7 +289,7 @@ export default function AnalyticsPage() {
     return Object.entries(map)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([week, v]) => ({ week: week.slice(5), ...v }));
-  }, []);
+  }, [referralData]);
 
   // ── Referrer intelligence ─────────────────────────────────────────────────
   const referrerLeaderboard = useMemo(() => {
@@ -288,9 +315,8 @@ export default function AnalyticsPage() {
       .sort((a, b) => b.total - a.total)
       .slice(0, 10)
       .map((r, i) => ({ ...r, rank: i + 1, convRate: Math.round((r.berhasil / r.total) * 100) }));
-  }, []);
+  }, [referralData]);
 
-  // radar data for top referrer
   const topReferrer = referrerLeaderboard[0];
   const radarData = topReferrer ? [
     { metric: 'Volume',    value: Math.round((topReferrer.total / (referrerLeaderboard[0]?.total || 1)) * 100) },
@@ -300,7 +326,6 @@ export default function AnalyticsPage() {
     { metric: 'Reach',     value: topReferrer.total > 3 ? 75 : 40 },
   ] : [];
 
-  // fraud by club for heatmap-style bar
   const fraudByClub = useMemo(() => {
     return clubData.map(c => ({
       name: c.name,
@@ -311,10 +336,19 @@ export default function AnalyticsPage() {
 
   if (!mounted) return null;
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-sans" style={{ background: T.bg, color: T.text }}>
+        <div className="flex flex-col items-center gap-4">
+          <Pulse />
+          <p className="text-sm font-bold tracking-widest uppercase" style={{ color: T.cyan }}>Loading Pipeline Data...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen font-sans" style={{ background: T.bg, color: T.text }}>
-
-      {/* ── Subtle grid background ──────────────────────────────────────── */}
       <div className="fixed inset-0 pointer-events-none" style={{
         backgroundImage: `linear-gradient(${T.border} 1px, transparent 1px),
                           linear-gradient(90deg, ${T.border} 1px, transparent 1px)`,
@@ -323,8 +357,6 @@ export default function AnalyticsPage() {
       }} />
 
       <div className="relative max-w-7xl mx-auto px-4 md:px-8 py-8 space-y-8">
-
-        {/* ── Header ────────────────────────────────────────────────────── */}
         <header className="flex flex-col md:flex-row md:items-end justify-between gap-5">
           <div>
             <div className="flex items-center gap-2 mb-2">
@@ -363,7 +395,6 @@ export default function AnalyticsPage() {
           </div>
         </header>
 
-        {/* ── KPI row ───────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <KpiCard title="Total Volume"  value={metrics.total}            sub="in pipeline"            icon={<Users size={16}/>}         color={T.cyan}    animate />
           <KpiCard title="Valid Logic"   value={metrics.valid}            sub={`${metrics.validPct}% pass`} icon={<ShieldCheck size={16}/>} color={T.emerald} animate />
@@ -372,15 +403,9 @@ export default function AnalyticsPage() {
           <KpiCard title="Conv. Rate"    value={`${metrics.convRate}%`}   sub="overall"                icon={<TrendingUp size={16}/>}    color={T.amber} />
         </div>
 
-        {/* ═══════════════════════════════════════════════════════════════
-            SECTION 1 — TIME-BASED TRENDS
-        ════════════════════════════════════════════════════════════════ */}
         <section>
           <SectionHeader title="Time-Based Trends" subtitle="weekly activity from updated_at" />
-
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-            {/* Weekly volume */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: T.muted }}>
                 Weekly referral volume
@@ -417,7 +442,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Online vs Offline */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: T.muted }}>
                 Online vs offline channel
@@ -444,7 +468,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Fraud trend */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: T.muted }}>
                 Weekly fraud flag rate
@@ -473,7 +496,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Status breakdown + source conv */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: T.muted }}>
                 Source conversion comparison
@@ -492,19 +514,12 @@ export default function AnalyticsPage() {
                 </ResponsiveContainer>
               </div>
             </Card>
-
           </div>
         </section>
 
-        {/* ═══════════════════════════════════════════════════════════════
-            SECTION 2 — REFERRER INTELLIGENCE
-        ════════════════════════════════════════════════════════════════ */}
         <section>
           <SectionHeader title="Referrer Intelligence" subtitle="power referrer leaderboard + fraud profiling" />
-
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-
-            {/* Top referrer spotlight */}
             {topReferrer && (
               <Card style={{ borderColor: T.cyan + '50' }}>
                 <div className="flex items-center gap-2 mb-4">
@@ -558,7 +573,6 @@ export default function AnalyticsPage() {
               </Card>
             )}
 
-            {/* Radar chart */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color: T.muted }}>
                 Top referrer profile
@@ -574,7 +588,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Fraud rate by club */}
             <Card>
               <div className="flex items-center gap-2 mb-4">
                 <Zap size={14} style={{ color: T.rose }} />
@@ -606,7 +619,6 @@ export default function AnalyticsPage() {
             </Card>
           </div>
 
-          {/* Full leaderboard table */}
           <Card className="overflow-hidden p-0">
             <div className="px-6 py-4" style={{ borderBottom: `1px solid ${T.border}` }}>
               <div className="flex items-center gap-2">
@@ -672,14 +684,9 @@ export default function AnalyticsPage() {
           </Card>
         </section>
 
-        {/* ═══════════════════════════════════════════════════════════════
-            SECTION 3 — ORIGINAL CHARTS (redesigned)
-        ════════════════════════════════════════════════════════════════ */}
         <section>
           <SectionHeader title="Pipeline Overview" subtitle="source, status & business logic health" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-            {/* Status donut */}
             <Card>
               <p className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: T.muted }}>
                 Referral status
@@ -711,7 +718,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Top clubs */}
             <Card>
               <div className="flex items-center gap-2 mb-4">
                 <Clock size={13} style={{ color: T.violet }} />
@@ -739,7 +745,6 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            {/* Business logic health */}
             <Card style={{ borderColor: metrics.invalid > 0 ? T.rose + '40' : T.emerald + '40' }}>
               <div className="flex items-center gap-2 mb-5">
                 {metrics.invalid > 0
@@ -777,22 +782,19 @@ export default function AnalyticsPage() {
                       <span>{row.label}</span>
                       <span className="font-mono font-bold" style={{ color: row.color }}>{row.val}</span>
                     </div>
-                    <AnimatedBar pct={Math.round((row.val / metrics.total) * 100)} color={row.color} />
+                    <AnimatedBar pct={Math.round((row.val / (metrics.total || 1)) * 100)} color={row.color} />
                   </div>
                 ))}
               </div>
             </Card>
-
           </div>
         </section>
 
-        {/* ── Footer ────────────────────────────────────────────────────── */}
         <footer className="flex justify-between items-center pt-2 pb-4"
           style={{ borderTop: `1px solid ${T.border}`, color: T.muted }}>
           <span className="text-[10px] uppercase tracking-widest">Referral Analytics Dashboard</span>
           <span className="text-[10px] font-mono">{metrics.total} records · PySpark pipeline</span>
         </footer>
-
       </div>
     </div>
   );
